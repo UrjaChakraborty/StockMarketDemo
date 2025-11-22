@@ -53,6 +53,3 @@ python evaluate.py --model model.pkl --data data/stock.csv
 - Add ridge/lasso regression or time-series models (ARIMA, Prophet)
 - Add more features: volume changes, RSI, MACD
 - Use cross-validation with rolling windows
-
-## License
-MIT — adapt and reuse for learning purposes.
