@@ -99,6 +99,45 @@ def explain_model() -> str:
     return f"next_open = {coef:.6f} * yesterday_close + {intercept:.6f}  (rmse={rmse:.4f})"
 
 
+def recommend_buy(yesterday_close: float) -> dict:
+    """Return a recommendation dict based on predicted next open vs yesterday_close.
+
+    The dict contains:
+      - `recommend` : 'YES' or 'NO' or 'UNKNOWN'
+      - `predicted_open`: float or None
+      - `delta`: predicted_open - yesterday_close
+      - `pct_change`: percent change
+      - `explanation`: human-readable explanation including RMSE for confidence.
+    """
+    _ensure_model()
+    if _GLOBAL_MODEL is None:
+        return {"recommend": "UNKNOWN", "predicted_open": None, "delta": None, "pct_change": None,
+                "explanation": "Model not available (CSV missing or insufficient data)."}
+
+    pred = predict_next_open(yesterday_close)
+    rmse = _GLOBAL_RMSE if _GLOBAL_RMSE is not None else 0.0
+    delta = pred - float(yesterday_close)
+    pct = (delta / float(yesterday_close)) * 100 if yesterday_close != 0 else float('inf')
+
+    # Simple decision rule: buy if predicted open > yesterday close
+    if pred > float(yesterday_close):
+        recommend = "YES"
+        explanation = (f"Predicted next open {pred:.4f} is higher than yesterday's close {yesterday_close:.4f}. "
+                       f"Expected gain {delta:.4f} ({pct:.2f}%).")
+    else:
+        recommend = "NO"
+        explanation = (f"Predicted next open {pred:.4f} is not higher than yesterday's close {yesterday_close:.4f}. "
+                       f"Expected change {delta:.4f} ({pct:.2f}%).")
+
+    # Add a confidence note when the expected change is within the model RMSE
+    if abs(delta) <= rmse:
+        explanation += f" Note: change ({delta:.4f}) is within model RMSE (~{rmse:.4f}), so prediction is uncertain."
+
+    explanation += f" Model RMSE={rmse:.4f}."
+
+    return {"recommend": recommend, "predicted_open": pred, "delta": delta, "pct_change": pct, "explanation": explanation}
+
+
 def _cli(argv: list[str]) -> int:
     if len(argv) >= 2:
         try:
@@ -121,6 +160,13 @@ def _cli(argv: list[str]) -> int:
 
     print(f"Predicted next Open: {pred:.4f}")
     print(explain_model())
+
+    rec = recommend_buy(y_close)
+    if rec["recommend"] == "UNKNOWN":
+        print("Recommendation: UNKNOWN - could not compute recommendation")
+    else:
+        print(f"Recommendation: {rec['recommend']}")
+        print(rec['explanation'])
     return 0
 
 
