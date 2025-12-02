@@ -1,35 +1,65 @@
 """
-Simple predictor module
+Enhanced predictor module
 
-This module trains a tiny linear model that maps yesterday's `Close` price
-to the next day's `Open` price using the same CSV dataset used by
-`testdata.py` (default path: C:/Users/noosa/NVidia_stock_history.csv).
+This module trains multiple linear models that use the last three days' open/close prices
+and trend information to predict the next three days' close prices.
+
+Features used:
+- Last 3 days' open prices
+- Last 3 days' close prices  
+- Trend indicators (increase/decrease/same) for each day
 
 Public API:
-- `predict_next_open(yesterday_close: float) -> float`
+- `predict_next_three_closes(features: dict) -> dict`
+- `recommend_buy_enhanced(features: dict) -> dict`
 
-If run as a script you can pass a numeric value on the command line or
-the script will prompt for one interactively.
+If run as a script you can input data interactively or provide via command line.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
+from sklearn.preprocessing import LabelEncoder
 
 
 DEFAULT_CSV = r"C:\Users\noosa\NVidia_stock_history.csv"
 
 
-def _train_model(csv_path: str | Path = DEFAULT_CSV) -> tuple[Optional[LinearRegression], Optional[float]]:
-    """Train a linear regression mapping Close(t) -> Open(t+1).
+def _prepare_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare feature matrix from historical data."""
+    df = df.sort_values('Date') if 'Date' in df.columns else df
+    
+    # Create features for last 3 days
+    for i in range(1, 4):  # Days -3, -2, -1
+        df[f'Open_m{i}'] = df['Open'].shift(i)
+        df[f'Close_m{i}'] = df['Close'].shift(i)
+    
+    # Create target variables for next 3 days
+    df['Close_p1'] = df['Close'].shift(-1)
+    df['Close_p2'] = df['Close'].shift(-2)
+    df['Close_p3'] = df['Close'].shift(-3)
+    
+    # Add trend features (1: increase, 0: same, -1: decrease)
+    for i in range(1, 4):
+        df[f'Trend_m{i}'] = np.where(df[f'Close_m{i}'] > df[f'Open_m{i}'], 1,
+                                    np.where(df[f'Close_m{i}'] < df[f'Open_m{i}'], -1, 0))
+    
+    # Drop rows with NaN values
+    df_clean = df.dropna()
+    
+    return df_clean
 
-    Returns (model, rmse) where model is a fitted LinearRegression or None on error.
+
+def _train_models(csv_path: str | Path = DEFAULT_CSV) -> tuple[Optional[Dict[str, LinearRegression]], Optional[Dict[str, float]]]:
+    """Train linear regression models for predicting next 3 days' close prices.
+    
+    Returns (models_dict, rmse_dict) where models_dict contains models for each day ahead.
     """
     try:
         df = pd.read_csv(str(csv_path))
@@ -41,132 +71,261 @@ def _train_model(csv_path: str | Path = DEFAULT_CSV) -> tuple[Optional[LinearReg
         print("CSV must contain 'Close' and 'Open' columns")
         return None, None
 
-    df = df.sort_values('Date') if 'Date' in df.columns else df
-
-    df['Next_Open'] = df['Open'].shift(-1)
-    data = df[['Close', 'Next_Open']].dropna()
-    if len(data) < 10:
+    # Prepare features
+    df_features = _prepare_features(df)
+    
+    if len(df_features) < 10:
         print("Not enough data to train the predictor")
         return None, None
+    
+    # Define feature columns
+    feature_cols = []
+    for i in range(1, 4):  # Last 3 days
+        feature_cols.extend([f'Open_m{i}', f'Close_m{i}', f'Trend_m{i}'])
+    
+    # Target columns
+    target_cols = ['Close_p1', 'Close_p2', 'Close_p3']
+    
+    X = df_features[feature_cols].to_numpy()
+    models = {}
+    rmses = {}
+    
+    # Train separate model for each prediction horizon
+    for idx, target_col in enumerate(target_cols):
+        y = df_features[target_col].to_numpy()
+        
+        model = LinearRegression()
+        model.fit(X, y)
+        models[target_col] = model
+        
+        # Calculate RMSE for this model
+        preds = model.predict(X)
+        rmse = float(np.sqrt(mean_squared_error(y, preds)))
+        rmses[target_col] = rmse
+    
+    return models, rmses
 
-    X = data['Close'].to_numpy().reshape(-1, 1)
-    y = data['Next_Open'].to_numpy()
 
-    model = LinearRegression()
-    model.fit(X, y)
-
-    preds = model.predict(X)
-    rmse = float(np.sqrt(mean_squared_error(y, preds)))
-    return model, rmse
+_GLOBAL_MODELS: Optional[Dict[str, LinearRegression]] = None
+_GLOBAL_RMSES: Optional[Dict[str, float]] = None
 
 
-_GLOBAL_MODEL: Optional[LinearRegression] = None
-_GLOBAL_RMSE: Optional[float] = None
+def _ensure_models():
+    global _GLOBAL_MODELS, _GLOBAL_RMSES
+    if _GLOBAL_MODELS is None:
+        _GLOBAL_MODELS, _GLOBAL_RMSES = _train_models(DEFAULT_CSV)
 
 
-def _ensure_model():
-    global _GLOBAL_MODEL, _GLOBAL_RMSE
-    if _GLOBAL_MODEL is None:
-        _GLOBAL_MODEL, _GLOBAL_RMSE = _train_model(DEFAULT_CSV)
-
-
-def predict_next_open(yesterday_close: float) -> Optional[float]:
-    """Predict tomorrow's open price given yesterday's close.
-
-    Returns predicted open as float, or None if model couldn't be trained.
-    """
-    _ensure_model()
-    if _GLOBAL_MODEL is None:
+def _prepare_input_features(opens: List[float], closes: List[float], trends: List[str]) -> Optional[np.ndarray]:
+    """Prepare input feature vector from user inputs."""
+    if len(opens) != 3 or len(closes) != 3 or len(trends) != 3:
+        print("Error: Need exactly 3 values for opens, closes, and trends")
         return None
+    
+    # Convert trend strings to numeric
+    trend_mapping = {'increase': 1, 'decrease': -1, 'same': 0}
+    trends_numeric = []
+    
+    for trend in trends:
+        trend_lower = trend.lower()
+        if trend_lower in trend_mapping:
+            trends_numeric.append(trend_mapping[trend_lower])
+        else:
+            print(f"Warning: Invalid trend '{trend}'. Using 'same' (0).")
+            trends_numeric.append(0)
+    
+    # Prepare feature vector in correct order
+    features = []
+    for i in range(3):
+        # Note: We're using day -3 as m1, day -2 as m2, day -1 as m3
+        # Adjust indexing based on your preference
+        features.extend([opens[i], closes[i], trends_numeric[i]])
+    
+    return np.array(features).reshape(1, -1)
 
-    x = np.array([[float(yesterday_close)]])
-    pred = float(_GLOBAL_MODEL.predict(x)[0])
-    return pred
 
-
-def explain_model() -> str:
-    """Return a short explanation of the trained linear model (coef, intercept, rmse).
-
-    If model not available returns an explanation string describing the problem.
+def predict_next_three_closes(opens: List[float], closes: List[float], trends: List[str]) -> Optional[Dict[str, float]]:
+    """Predict next 3 days' close prices given last 3 days' data.
+    
+    Args:
+        opens: List of 3 open prices (most recent last)
+        closes: List of 3 close prices (most recent last)
+        trends: List of 3 trend indicators ('increase', 'decrease', or 'same')
+    
+    Returns:
+        Dictionary with predicted close prices for days +1, +2, +3
     """
-    _ensure_model()
-    if _GLOBAL_MODEL is None:
-        return "Model not available (CSV missing or insufficient data)."
+    _ensure_models()
+    if _GLOBAL_MODELS is None:
+        return None
+    
+    # Prepare input features
+    X_input = _prepare_input_features(opens, closes, trends)
+    if X_input is None:
+        return None
+    
+    # Make predictions
+    predictions = {}
+    for target_col in ['Close_p1', 'Close_p2', 'Close_p3']:
+        model = _GLOBAL_MODELS[target_col]
+        pred = float(model.predict(X_input)[0])
+        predictions[target_col] = pred
+    
+    return predictions
 
-    coef = float(_GLOBAL_MODEL.coef_[0])
-    intercept = float(_GLOBAL_MODEL.intercept_)
-    rmse = _GLOBAL_RMSE
-    return f"next_open = {coef:.6f} * yesterday_close + {intercept:.6f}  (rmse={rmse:.4f})"
+
+def explain_models() -> str:
+    """Return explanation of all trained models."""
+    _ensure_models()
+    if _GLOBAL_MODELS is None:
+        return "Models not available (CSV missing or insufficient data)."
+    
+    explanation = "Models for predicting next 3 days' close prices:\n"
+    for target_col, model in _GLOBAL_MODELS.items():
+        coef_str = ", ".join([f"{c:.6f}" for c in model.coef_])
+        intercept = float(model.intercept_)
+        rmse = _GLOBAL_RMSES[target_col] if _GLOBAL_RMSES else 0.0
+        explanation += f"{target_col}: coefs=[{coef_str}], intercept={intercept:.6f}, RMSE={rmse:.4f}\n"
+    
+    explanation += "\nFeature order: [Open_m1, Close_m1, Trend_m1, Open_m2, Close_m2, Trend_m2, Open_m3, Close_m3, Trend_m3]"
+    explanation += "\nTrend encoding: increase=1, decrease=-1, same=0"
+    return explanation
 
 
-def recommend_buy(yesterday_close: float) -> dict:
-    """Return a recommendation dict based on predicted next open vs yesterday_close.
-
+def recommend_buy_enhanced(opens: List[float], closes: List[float], trends: List[str]) -> dict:
+    """Return recommendation based on predicted next 3 days' close prices.
+    
     The dict contains:
       - `recommend` : 'YES' or 'NO' or 'UNKNOWN'
-      - `predicted_open`: float or None
-      - `delta`: predicted_open - yesterday_close
-      - `pct_change`: percent change
-      - `explanation`: human-readable explanation including RMSE for confidence.
+      - `predictions`: dict of predicted close prices
+      - `avg_predicted_change`: average predicted change over 3 days
+      - `max_predicted_change`: maximum predicted change
+      - `explanation`: human-readable explanation
     """
-    _ensure_model()
-    if _GLOBAL_MODEL is None:
-        return {"recommend": "UNKNOWN", "predicted_open": None, "delta": None, "pct_change": None,
-                "explanation": "Model not available (CSV missing or insufficient data)."}
-
-    pred = predict_next_open(yesterday_close)
-    rmse = _GLOBAL_RMSE if _GLOBAL_RMSE is not None else 0.0
-    delta = pred - float(yesterday_close)
-    pct = (delta / float(yesterday_close)) * 100 if yesterday_close != 0 else float('inf')
-
-    # Simple decision rule: buy if predicted open > yesterday close
-    if pred > float(yesterday_close):
+    _ensure_models()
+    if _GLOBAL_MODELS is None:
+        return {"recommend": "UNKNOWN", "predictions": None, "avg_predicted_change": None,
+                "max_predicted_change": None, "explanation": "Model not available."}
+    
+    # Get predictions
+    predictions = predict_next_three_closes(opens, closes, trends)
+    if predictions is None:
+        return {"recommend": "UNKNOWN", "predictions": None, "avg_predicted_change": None,
+                "max_predicted_change": None, "explanation": "Could not prepare features."}
+    
+    last_close = closes[-1]  # Most recent close
+    
+    # Calculate changes
+    changes = []
+    change_details = []
+    for i, (target_col, pred) in enumerate(predictions.items()):
+        change = pred - last_close
+        pct_change = (change / last_close) * 100 if last_close != 0 else float('inf')
+        changes.append(change)
+        change_details.append(f"Day+{i+1}: {pred:.4f} (Δ={change:+.4f}, {pct_change:+.2f}%)")
+    
+    avg_change = sum(changes) / len(changes)
+    max_change = max(changes)
+    
+    # Simple decision rule: buy if average predicted change > 0
+    if avg_change > 0:
         recommend = "YES"
-        explanation = (f"Predicted next open {pred:.4f} is higher than yesterday's close {yesterday_close:.4f}. "
-                       f"Expected gain {delta:.4f} ({pct:.2f}%).")
+        reason = f"Average predicted change over 3 days is positive (+{avg_change:.4f})"
     else:
         recommend = "NO"
-        explanation = (f"Predicted next open {pred:.4f} is not higher than yesterday's close {yesterday_close:.4f}. "
-                       f"Expected change {delta:.4f} ({pct:.2f}%).")
-
-    # Add a confidence note when the expected change is within the model RMSE
-    if abs(delta) <= rmse:
-        explanation += f" Note: change ({delta:.4f}) is within model RMSE (~{rmse:.4f}), so prediction is uncertain."
-
-    explanation += f" Model RMSE={rmse:.4f}."
-
-    return {"recommend": recommend, "predicted_open": pred, "delta": delta, "pct_change": pct, "explanation": explanation}
+        reason = f"Average predicted change over 3 days is negative ({avg_change:.4f})"
+    
+    # Add confidence based on RMSE
+    avg_rmse = sum(_GLOBAL_RMSES.values()) / len(_GLOBAL_RMSES) if _GLOBAL_RMSES else 0.0
+    confidence_note = ""
+    if abs(avg_change) <= avg_rmse:
+        confidence_note = f" Note: Average change ({avg_change:.4f}) is within average RMSE ({avg_rmse:.4f}), prediction uncertain."
+    
+    explanation = f"Recommendation: {recommend}\n"
+    explanation += f"Last close: {last_close:.4f}\n"
+    explanation += "Predicted closes:\n  " + "\n  ".join(change_details) + "\n"
+    explanation += f"Average predicted change: {avg_change:.4f}\n"
+    explanation += f"Maximum predicted change: {max_change:.4f}\n"
+    explanation += reason + confidence_note
+    
+    return {
+        "recommend": recommend,
+        "predictions": predictions,
+        "avg_predicted_change": avg_change,
+        "max_predicted_change": max_change,
+        "explanation": explanation
+    }
 
 
 def _cli(argv: list[str]) -> int:
-    if len(argv) >= 2:
+    """Command line interface."""
+    print("Enhanced Stock Predictor")
+    print("=" * 50)
+    
+    # Check if we have command line arguments
+    if len(argv) >= 7:
+        # Try to parse command line arguments
         try:
-            y_close = float(argv[1])
-        except ValueError:
-            print("Provide a numeric yesterday close, e.g. 482.25")
+            opens = [float(argv[i]) for i in range(1, 4)]
+            closes = [float(argv[i]) for i in range(4, 7)]
+            trends = argv[7:10]
+        except (ValueError, IndexError):
+            print("Command line usage: python script.py open1 open2 open3 close1 close2 close3 trend1 trend2 trend3")
+            print("trend values: 'increase', 'decrease', or 'same'")
             return 2
     else:
-        try:
-            v = input("Enter yesterday's Close price: ")
-            y_close = float(v)
-        except Exception:
-            print("Invalid input — expected a number")
-            return 2
-
-    pred = predict_next_open(y_close)
-    if pred is None:
-        print("Prediction unavailable — could not train model from CSV")
+        # Interactive input
+        opens = []
+        closes = []
+        trends = []
+        
+        print("Enter last 3 days of data (most recent last):")
+        for i in range(3):
+            print(f"\nDay {i+1}:")
+            try:
+                open_val = float(input(f"  Open price: "))
+                close_val = float(input(f"  Close price: "))
+                trend_val = input(f"  Trend (increase/decrease/same): ").strip().lower()
+                
+                if trend_val not in ['increase', 'decrease', 'same']:
+                    print(f"  Warning: Invalid trend '{trend_val}'. Using 'same'.")
+                    trend_val = 'same'
+                
+                opens.append(open_val)
+                closes.append(close_val)
+                trends.append(trend_val)
+            except ValueError:
+                print("Invalid input — expected numbers for prices")
+                return 2
+    
+    # Get predictions
+    predictions = predict_next_three_closes(opens, closes, trends)
+    
+    if predictions is None:
+        print("Prediction unavailable — could not train model from CSV or invalid input")
         return 1
-
-    print(f"Predicted next Open: {pred:.4f}")
-    print(explain_model())
-
-    rec = recommend_buy(y_close)
-    if rec["recommend"] == "UNKNOWN":
-        print("Recommendation: UNKNOWN - could not compute recommendation")
-    else:
-        print(f"Recommendation: {rec['recommend']}")
-        print(rec['explanation'])
+    
+    print("\n" + "=" * 50)
+    print("PREDICTION RESULTS")
+    print("=" * 50)
+    
+    last_close = closes[-1]
+    print(f"\nBased on last close: {last_close:.4f}")
+    print("\nPredicted close prices:")
+    for i, (key, value) in enumerate(predictions.items()):
+        change = value - last_close
+        pct = (change / last_close) * 100
+        print(f"  Day+{i+1}: {value:.4f} (Δ={change:+.4f}, {pct:+.2f}%)")
+    
+    print("\n" + explain_models())
+    
+    print("\n" + "=" * 50)
+    print("RECOMMENDATION")
+    print("=" * 50)
+    
+    rec = recommend_buy_enhanced(opens, closes, trends)
+    print("\n" + rec['explanation'])
+    
     return 0
 
 
