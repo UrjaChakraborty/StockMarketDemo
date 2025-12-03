@@ -1,4 +1,8 @@
 
+# SCRAPPED
+# DONT DELETE YET THO IN CASE WE NEED IT LATER
+
+'''
 """
 Random Forest Stock Predictor Module
 
@@ -196,3 +200,8 @@ def _cli(argv):
 
 if __name__ == "__main__":
     raise SystemExit(_cli(sys.argv))
+
+    '''
+
+# SCRAPPED
+# DONT DELETE YET THO IN CASE WE NEED IT LATER

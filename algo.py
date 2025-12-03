@@ -1,210 +1,236 @@
 """
-new test adds rec feature and if yesterday and weekly trend inputs
+Prediction system using technical-indicator model.
+
+Loads:
+    lin_model.pkl
+    rf_model.pkl
+    scaler.pkl
+
+User calls:
+    predict_next_open(..., model="linear")
+    predict_next_open(..., model="rf")
+
+Both models use the same feature pipeline.
 """
-from __future__ import annotations
 
-import sys
-from pathlib import Path
-from typing import Optional
-
-import pandas as pd
 import numpy as np
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
+import pandas as pd
+import joblib
+from sklearn.metrics import r2_score, mean_squared_error
 
-DEFAULT_CSV = r"C:\Users\noosa\NVidia_stock_history.csv"
 
-# ----------- Helper: Encode trend strings into numeric dummies -----------
+RF_PATH = "rf_model.pkl"
+LIN_PATH = "lin_model.pkl"
+SCALER_PATH = "scaler.pkl"
 
-def _encode_trend(trend: str) -> tuple[int, int, int]:
+
+# loading models + scaler
+try:
+    lin_model = joblib.load(LIN_PATH)
+    rf_model = joblib.load(RF_PATH)
+    scaler = joblib.load(SCALER_PATH)
+    MODELS_READY = True
+except Exception:
+    lin_model = None
+    rf_model = None
+    scaler = None
+    MODELS_READY = False
+
+
+# compute indicators
+def compute_indicators(df):
+    df = df.copy()
+
+    df["SMA_5"] = df["Close"].rolling(5).mean()
+    df["SMA_20"] = df["Close"].rolling(20).mean()
+    df["Return"] = df["Close"].pct_change()
+
+    delta = df["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+
+    rs = gain.rolling(14).mean() / loss.rolling(14).mean().replace(0, np.nan)
+    df["RSI"] = 100 - (100 / (1 + rs))
+
+    ema12 = df["Close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["Close"].ewm(span=26, adjust=False).mean()
+    df["MACD"] = ema12 - ema26
+
+    return df
+
+
+FEATURES = [
+    "Open", "High", "Low", "Close", "Volume",
+    "SMA_5", "SMA_20", "RSI", "MACD", "Return"
+]
+
+
+# feature prepping
+def prepare_input(open_, high, low, close, volume, history_df):
     """
-    Returns (is_higher, is_lower, is_same) one-hot encoded.
+    history_df: must contain at least 20–26+ previous rows.
+    Returns a DataFrame (1 row) with exactly the FEATURES columns.
     """
-    t = trend.lower().strip()
-    if t == "higher":
-        return (1, 0, 0)
-    elif t == "lower":
-        return (0, 1, 0)
-    else:
-        return (0, 0, 1)
+    df = history_df.copy()
+
+    df.loc[len(df)] = {
+        "Open": open_,
+        "High": high,
+        "Low": low,
+        "Close": close,
+        "Volume": volume
+    }
+
+    df = compute_indicators(df).dropna()
+    row = df.iloc[-1]
+
+    # return as a single-row DataFrame with the right columns (keeps feature names)
+    return row[FEATURES].to_frame().T
 
 
-# ------------------------- Training ---------------------------------------
 
-def _train_model(csv_path: str | Path = DEFAULT_CSV) -> tuple[Optional[LinearRegression], Optional[float]]:
-    """Train a linear regression mapping:
-       (Close(t), yesterday_trend, weekly_trend) → Open(t+1)
-    """
-    try:
-        df = pd.read_csv(str(csv_path))
-    except Exception as e:
-        print(f"Could not read CSV at {csv_path}: {e}")
-        return None, None
-
-    if 'Close' not in df.columns or 'Open' not in df.columns:
-        print("CSV must contain 'Close' and 'Open' columns")
-        return None, None
-
-    if 'Date' in df.columns:
-        df = df.sort_values('Date')
-
-    # Next day's open (target)
-    df['Next_Open'] = df['Open'].shift(-1)
-
-    # Yesterday trend vs previous day's close
-    df['Prev_Close'] = df['Close'].shift(1)
-    df['Yesterday_Trend'] = np.where(df['Close'] > df['Prev_Close'], "higher",
-                            np.where(df['Close'] < df['Prev_Close'], "lower", "same"))
-
-    # Weekly trend (compare to close 7 days ago)
-    df['Prev_Week_Close'] = df['Close'].shift(7)
-    df['Weekly_Trend'] = np.where(df['Close'] > df['Prev_Week_Close'], "higher",
-                          np.where(df['Close'] < df['Prev_Week_Close'], "lower", "same"))
-
-    df = df.dropna(subset=['Next_Open'])
-
-    if len(df) < 10:
-        print("Not enough data to train the predictor")
-        return None, None
-
-    # Encode trend dummies
-    yt_encoded = np.array([_encode_trend(t) for t in df['Yesterday_Trend']])
-    wt_encoded = np.array([_encode_trend(t) for t in df['Weekly_Trend']])
-
-    X = np.column_stack([
-        df['Close'].to_numpy(),
-        yt_encoded,
-        wt_encoded
-    ])
-
-    y = df['Next_Open'].to_numpy()
-
-    model = LinearRegression()
-    model.fit(X, y)
-
-    preds = model.predict(X)
-    rmse = float(np.sqrt(mean_squared_error(y, preds)))
-
-    return model, rmse
-
-
-_GLOBAL_MODEL: Optional[LinearRegression] = None
-_GLOBAL_RMSE: Optional[float] = None
-
-
-def _ensure_model():
-    global _GLOBAL_MODEL, _GLOBAL_RMSE
-    if _GLOBAL_MODEL is None:
-        _GLOBAL_MODEL, _GLOBAL_RMSE = _train_model(DEFAULT_CSV)
-
-
-# ------------------------- Public Prediction API --------------------------
-
-def predict_next_open(yesterday_close: float,
-                      yesterday_trend: str,
-                      weekly_trend: str) -> Optional[float]:
-    """
-    Predict tomorrow's open using close + trends.
-    """
-    _ensure_model()
-    if _GLOBAL_MODEL is None:
+# prediction api
+def predict_next_open(open_, high, low, close, volume, history_df, model="rf"):
+    if not MODELS_READY:
         return None
 
-    yt = np.array(_encode_trend(yesterday_trend))
-    wt = np.array(_encode_trend(weekly_trend))
+    X_df = prepare_input(open_, high, low, close, volume, history_df)  # DataFrame (1 row)
+    X_scaled = scaler.transform(X_df)  # scaler expects feature names; passing DF avoids the warning
 
-    x = np.concatenate([[float(yesterday_close)], yt, wt]).reshape(1, -1)
-    pred = float(_GLOBAL_MODEL.predict(x)[0])
-    return pred
-
-
-def explain_model() -> str:
-    """Explain model coefficients."""
-    _ensure_model()
-    if _GLOBAL_MODEL is None:
-        return "Model not available (CSV missing or insufficient data)."
-
-    coef = _GLOBAL_MODEL.coef_
-    intercept = float(_GLOBAL_MODEL.intercept_)
-    rmse = _GLOBAL_RMSE
-
-    labels = [
-        "close_coef",
-        "yesterday_higher", "yesterday_lower", "yesterday_same",
-        "weekly_higher", "weekly_lower", "weekly_same"
-    ]
-
-    lines = [f"{lab}: {float(c):.6f}" for lab, c in zip(labels, coef)]
-    lines.append(f"intercept: {intercept:.6f}")
-    lines.append(f"RMSE: {rmse:.4f}")
-
-    return "\n".join(lines)
-
-
-def recommend_buy(yesterday_close: float,
-                  yesterday_trend: str,
-                  weekly_trend: str) -> dict:
-    """Decision rule using trend-aware prediction."""
-    _ensure_model()
-    if _GLOBAL_MODEL is None:
-        return {"recommend": "UNKNOWN", "predicted_open": None, "delta": None,
-                "pct_change": None, "explanation": "Model not available."}
-
-    pred = predict_next_open(yesterday_close, yesterday_trend, weekly_trend)
-    rmse = _GLOBAL_RMSE or 0.0
-
-    delta = pred - float(yesterday_close)
-    pct = (delta / float(yesterday_close)) * 100 if yesterday_close != 0 else float('inf')
-
-    if pred > yesterday_close:
-        recommend = "YES"
-        explanation = (
-            f"Predicted next open {pred:.4f} is higher than yesterday's close {yesterday_close:.4f}. "
-            f"(yesterday trend={yesterday_trend}, weekly trend={weekly_trend}) "
-            f"Expected change {delta:.4f} ({pct:.2f}%)."
-        )
+    if model == "linear":
+        return float(lin_model.predict(X_scaled)[0])
     else:
-        recommend = "NO"
-        explanation = (
-            f"Predicted next open {pred:.4f} is not higher than yesterday's close {yesterday_close:.4f}. "
-            f"(yesterday trend={yesterday_trend}, weekly trend={weekly_trend}) "
-            f"Expected change {delta:.4f} ({pct:.2f}%)."
-        )
-
-    if abs(delta) <= rmse:
-        explanation += f" Note: change ({delta:.4f}) is within RMSE (~{rmse:.4f}), uncertainty is high."
-
-    explanation += f" RMSE={rmse:.4f}."
-
-    return {"recommend": recommend, "predicted_open": pred,
-            "delta": delta, "pct_change": pct, "explanation": explanation}
+        return float(rf_model.predict(X_scaled)[0])
 
 
-# ----------------------------- CLI Option ---------------------------------
 
-def _cli(argv: list[str]) -> int:
-    try:
-        y_close = float(input("Enter yesterday's Close price: "))
-        yesterday_trend = input("Was yesterday higher, lower, or same? ").strip()
-        weekly_trend = input("Was this week higher, lower, or same? ").strip()
-    except Exception:
-        print("Invalid input.")
-        return 2
-
-    pred = predict_next_open(y_close, yesterday_trend, weekly_trend)
+def recommend(open_, high, low, close, volume, history_df, model="rf"):
+    pred = predict_next_open(open_, high, low, close, volume, history_df, model)
     if pred is None:
-        print("Prediction unavailable — could not train model.")
-        return 1
+        return {"recommend": "UNKNOWN", "reason": "Model not loaded"}
 
-    print(f"\nPredicted next Open: {pred:.4f}")
-    print("\nModel details:")
-    print(explain_model())
+    delta = pred - close
+    pct = (delta / close) * 100 if close != 0 else 0
 
-    rec = recommend_buy(y_close, yesterday_trend, weekly_trend)
-    print(f"\nRecommendation: {rec['recommend']}")
-    print(rec['explanation'])
-    return 0
+    rec = "BUY" if pred > close else "NO BUY"
+
+    return {
+        "model_used": model,
+        "recommend": rec,
+        "predicted_next_open": pred,
+        "delta": delta,
+        "pct_change": pct,
+        "explanation": f"{model.upper()} predicts {pred:.2f} vs close {close:.2f} ({pct:.2f}%)."
+    }
 
 
+# evaluation function
+def evaluate_models(history_df):
+    """
+    Computes model R2 and RMSE based on historical data.
+    Prediction target = next day's Open.
+    """
+    if not MODELS_READY:
+        return None
+
+    df = compute_indicators(history_df.copy()).dropna()
+
+    # align features X(t) → next-open(t+1)
+    df["Next_Open"] = df["Open"].shift(-1)
+    df = df.dropna()
+
+    X_df = df[FEATURES]        # DataFrame, keeps column names
+    y = df["Next_Open"].to_numpy()
+
+    X_scaled = scaler.transform(X_df)  # pass DataFrame to avoid feature-name warning
+
+    # predictions
+    pred_lin = lin_model.predict(X_scaled)
+    pred_rf = rf_model.predict(X_scaled)
+    pred_ens = (pred_lin + pred_rf) / 2
+
+    # compute RMSE via sqrt of MSE (compatible with older sklearn versions)
+    rmse_lin = float(np.sqrt(mean_squared_error(y, pred_lin)))
+    rmse_rf = float(np.sqrt(mean_squared_error(y, pred_rf)))
+    rmse_ens = float(np.sqrt(mean_squared_error(y, pred_ens)))
+
+    return {
+        "R2_linear": float(r2_score(y, pred_lin)),
+        "R2_rf": float(r2_score(y, pred_rf)),
+        "RMSE_linear": rmse_lin,
+        "RMSE_rf": rmse_rf,
+        "RMSE_ensemble": rmse_ens,
+    }
+
+
+# main program
 if __name__ == "__main__":
-    raise SystemExit(_cli(sys.argv))
+    if not MODELS_READY:
+        print("Models are not loaded. Ensure rf_model.pkl, lin_model.pkl, scaler.pkl exist.")
+        exit()
+
+    print("=== Stock Prediction System ===")
+    print("Enter today's OHLCV data:")
+
+    open_ = float(input("Open: "))
+    high = float(input("High: "))
+    low = float(input("Low: "))
+    close = float(input("Close: "))
+    volume = float(input("Volume: "))
+
+    hist_path = input("Path to historical CSV (same one used for training): ")
+
+    try:
+        history_df = pd.read_csv(hist_path)
+    except Exception as e:
+        print("Could not load history file:", e)
+        exit()
+
+    # Prepare history (indicators)
+    history_df = compute_indicators(history_df).dropna()
+
+    # === Predictions ===
+    pred_lin = predict_next_open(open_, high, low, close, volume, history_df, model="linear")
+    pred_rf = predict_next_open(open_, high, low, close, volume, history_df, model="rf")
+    ensemble_pred = (pred_lin + pred_rf) / 2
+
+    print("\n=== Predictions ===")
+    print(f"Linear Regression: {pred_lin:.4f}")
+    print(f"Random Forest:     {pred_rf:.4f}")
+    print(f"Ensemble (avg):    {ensemble_pred:.4f}")
+
+    # === Model Evaluation ===
+    print("\n=== Model Accuracy (Historical) ===")
+    metrics = evaluate_models(pd.read_csv(hist_path))
+
+    if metrics:
+        rmse_lin = metrics["RMSE_linear"]
+        rmse_rf = metrics["RMSE_rf"]
+
+        print(f"Linear R²:        {metrics['R2_linear']:.4f}")
+        print(f"RandomForest R²:  {metrics['R2_rf']:.4f}")
+        print(f"Linear RMSE:      {rmse_lin:.4f}")
+        print(f"RF RMSE:          {rmse_rf:.4f}")
+        print(f"Ensemble RMSE:    {metrics['RMSE_ensemble']:.4f}")
+    else:
+        print("Could not compute metrics.")
+        exit()
+
+    # === Auto-select best model by RMSE ===
+    print("\n=== Best Model Selection ===")
+    best_model = "linear" if rmse_lin < rmse_rf else "rf"
+    print(f"→ Best model based on RMSE: {best_model.upper()}")
+
+    # === Final Recommendation ===
+    print("\n=== Final Recommendation (Best Model) ===")
+    rec = recommend(open_, high, low, close, volume, history_df, model=best_model)
+
+    print(f"Model Used:       {rec['model_used']}")
+    print(f"Recommendation:   {rec['recommend']}")
+    print(f"Prediction:       {rec['predicted_next_open']:.4f}")
+    print(f"Delta:            {rec['delta']:.4f}")
+    print(f"Pct Change:       {rec['pct_change']:.4f}%")
+    print(f"Explanation:      {rec['explanation']}")
+
+
+# C:\Users\noosa\NVidia_stock_history.csv
