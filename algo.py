@@ -1,5 +1,9 @@
 """
-Prediction system using technical-indicator model.
+Prediction system!!! some comments:
+-  testing not fully done for random forest, so no clue whats going on there i fear. maybe someone can pick this up?
+-  model training code is in testdata.py
+-  this file algo.py is the main prediction engine
+okay thats all thanks bye
 
 Loads:
     lin_model.pkl
@@ -41,7 +45,7 @@ except Exception:
     MODELS_READY = False
 
 
-# compute indicators
+# compute indicators - required each time before prediction bc we need them to reflect latest state
 def compute_indicators(df):
     df = df.copy()
 
@@ -130,10 +134,10 @@ def recommend(open_, high, low, close, volume, history_df, model="rf"):
 
 # evaluation function
 def evaluate_models(history_df):
-    """
-    Computes model R2 and RMSE based on historical data.
-    Prediction target = next day's Open.
-    """
+   
+    #Computes model R2 and RMSE based on historical data.
+    #Prediction target = next day's Open.
+    
     if not MODELS_READY:
         return None
 
@@ -238,3 +242,4 @@ if __name__ == "__main__":
 
 
 # C:\Users\noosa\NVidia_stock_history.csv
+# data\Nvidia_stock_history.csv

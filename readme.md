@@ -10,6 +10,8 @@ A small demo project that predicts next-day stock closing prices using a linear 
 - Evaluate with MSE and R²
 - Visualize predictions vs. actuals
 
+
+
 ## Dataset (expected)
 CSV with columns:
 - Date (YYYY-MM-DD)
@@ -39,11 +41,13 @@ this is important please install matplotlib
 1. Place dataset at `data/stock.csv`.
 2. Run training script:
 ```
-python train.py --data data/stock.csv --output model.pkl
-```
-3. Run evaluation / plot:
-```
-python evaluate.py --model model.pkl --data data/stock.csv
+python testdata.py
+
+# code
+run algo.py
+enter in data
+enter csv location - if rpo downloaded its data\Nvidia_stock_history.csv, feel free to add own csv
+get output
 ```
 
 ## Evaluation

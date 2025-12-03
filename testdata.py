@@ -34,14 +34,16 @@ LIN_PATH = "lin_model.pkl"
 SCALER_PATH = "scaler.pkl"
 
 
-# ===== INDICATORS =====
+# indicators
+# ill explain what they are
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    df["SMA_5"] = df["Close"].rolling(5).mean()
+    df["SMA_5"] = df["Close"].rolling(5).mean() # simple moving average over a certain number of days
     df["SMA_20"] = df["Close"].rolling(20).mean()
-    df["Return"] = df["Close"].pct_change()
+    df["Return"] = df["Close"].pct_change() # daily percent return
+    # these indicators convert raw OHLCV data into higher-level trend information
 
     delta = df["Close"].diff()
     gain = delta.clip(lower=0)
@@ -51,23 +53,26 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     avg_loss = loss.rolling(14).mean()
     rs = avg_gain / avg_loss
 
-    df["RSI"] = 100 - (100 / (1 + rs))
+    df["RSI"] = 100 - (100 / (1 + rs)) # rsi aka relative strength index is basically the momentum
+    # macd is basically ... two emas [exp moving averages] subtracted
 
     ema12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema26 = df["Close"].ewm(span=26, adjust=False).mean()
-    df["MACD"] = ema12 - ema26
+    df["MACD"] = ema12 - ema26 # also basically the momentum
+    # these r like standard indicators thank you google
 
     return df
 
 
-# ===== LOAD DATA =====
+# data loading + preprocessing
 
 df = pd.read_csv(CSV_PATH)
 df["Date"] = pd.to_datetime(df["Date"])
 df = df.sort_values("Date")
 
 df = add_indicators(df)
-df["Target"] = df["Open"].shift(-1)
+df["Target"] = df["Open"].shift(-1) #TARGET 
+# MINUS ONE because we want to predict the NEXT DAY'S OPEN price
 df = df.dropna().reset_index(drop=True)
 
 features = [
@@ -187,3 +192,4 @@ print(f"Saved RandomForest → {RF_PATH}")
 print(f"Saved scaler → {SCALER_PATH}")
 print("\nTraining complete with graphs and table.")
 
+# we have to save scaler because models expect scaled input
