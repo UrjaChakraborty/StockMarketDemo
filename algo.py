@@ -11,6 +11,10 @@ User calls:
     predict_next_open(..., model="rf")
 
 Both models use the same feature pipeline.
+    recommend_buy(yesterday_close, model="rf")
+    evaluate_models(history_df)
+    etc etc
+    this is update [TEN] done by me :)
 """
 
 import numpy as np

@@ -15,7 +15,7 @@ ADDED:
     • Prediction line graph
     • Comparison table (MAE, RMSE, R²)
 """
-
+import os
 import pandas as pd
 import numpy as np
 import time
@@ -27,7 +27,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 
-CSV_PATH = r"C:\Users\noosa\NVidia_stock_history.csv"
+CSV_PATH = os.path.join(os.path.dirname(__file__), "data", "NVidia_stock_history.csv")
 
 RF_PATH = "rf_model.pkl"
 LIN_PATH = "lin_model.pkl"
