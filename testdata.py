@@ -10,13 +10,17 @@ Saves:
     lin_model.pkl
     rf_model.pkl
     scaler.pkl
-    NEW NEW NEW UPDATE ADDED LINREG AND RANDOMFOREST
+
+ADDED:
+    • Prediction line graph
+    • Comparison table (MAE, RMSE, R²)
 """
 
 import pandas as pd
 import numpy as np
 import time
 import joblib
+import matplotlib.pyplot as plt
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -30,7 +34,7 @@ LIN_PATH = "lin_model.pkl"
 SCALER_PATH = "scaler.pkl"
 
 
-# indicators
+# ===== INDICATORS =====
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -56,7 +60,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# loading prep
+# ===== LOAD DATA =====
 
 df = pd.read_csv(CSV_PATH)
 df["Date"] = pd.to_datetime(df["Date"])
@@ -83,14 +87,14 @@ y_test = y.iloc[train_size:]
 print(f"Loaded {len(df)} rows. Training split: {train_size} rows.")
 
 
-# scaling
+# ===== SCALING =====
 
 scaler = MinMaxScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
 
-# linear regression training
+# ===== LINEAR REGRESSION =====
 
 print("\nTraining Linear Regression...")
 start = time.time()
@@ -104,7 +108,7 @@ lin_rmse = np.sqrt(mean_squared_error(y_test, lin_preds))
 lin_r2 = r2_score(y_test, lin_preds)
 
 
-# random forest training
+# ===== RANDOM FOREST =====
 
 print("\nTraining Random Forest...")
 start = time.time()
@@ -124,7 +128,7 @@ rf_rmse = np.sqrt(mean_squared_error(y_test, rf_preds))
 rf_r2 = r2_score(y_test, rf_preds)
 
 
-# results
+# ===== PRINT RESULTS =====
 
 print("\n===== LINEAR REGRESSION RESULTS =====")
 print(f"Training Time: {lin_time:.2f}s")
@@ -138,13 +142,42 @@ print(f"MAE:  {rf_mae:.4f}")
 print(f"RMSE: {rf_rmse:.4f}")
 print(f"R²:   {rf_r2:.4f}")
 
-
 print("\nFeature Importances (RF):")
 for f, imp in sorted(zip(features, rf.feature_importances_), key=lambda x: x[1], reverse=True):
     print(f"  {f}: {imp:.4f}")
 
 
-# BOTH MODELS THIS TIME CAUSE I FORGOT TO SAVE THE FIRST ONE :D
+# ===== GRAPH: ACTUAL vs PREDICTIONS =====
+
+plt.figure(figsize=(13, 6))
+plt.plot(y_test.values, label="Actual", linewidth=2)
+plt.plot(lin_preds, label="Linear Regression")
+plt.plot(rf_preds, label="Random Forest")
+plt.title("Prediction Comparison")
+plt.xlabel("Test Samples")
+plt.ylabel("Next Open Price")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+# ===== TABLE: MODEL COMPARISON =====
+
+comparison_table = pd.DataFrame({
+    "Model": ["Linear Regression", "Random Forest"],
+    "MAE": [lin_mae, rf_mae],
+    "RMSE": [lin_rmse, rf_rmse],
+    "R²": [lin_r2, rf_r2],
+    "Train Time (s)": [lin_time, rf_time]
+})
+
+print("\n===== MODEL COMPARISON TABLE =====")
+print(comparison_table.to_string(index=False))
+
+
+# ===== SAVE MODELS =====
+
 joblib.dump(lin, LIN_PATH)
 joblib.dump(rf, RF_PATH)
 joblib.dump(scaler, SCALER_PATH)
@@ -152,4 +185,5 @@ joblib.dump(scaler, SCALER_PATH)
 print(f"\nSaved LinearRegression → {LIN_PATH}")
 print(f"Saved RandomForest → {RF_PATH}")
 print(f"Saved scaler → {SCALER_PATH}")
-print("\nTraining complete.")
+print("\nTraining complete with graphs and table.")
+

@@ -32,6 +32,7 @@ Example row:
 - Install:
 ```
 pip install pandas numpy scikit-learn matplotlib
+this is important please install matplotlib
 ```
 
 ## Usage
@@ -48,6 +49,7 @@ python evaluate.py --model model.pkl --data data/stock.csv
 ## Evaluation
 - Report Mean Squared Error (MSE) and R² on the test set.
 - Plot predictions vs actual closing prices for visual inspection.
+- Reccommendation feature - which one is better
 
 ## Extending the demo
 - Add ridge/lasso regression or time-series models (ARIMA, Prophet)
